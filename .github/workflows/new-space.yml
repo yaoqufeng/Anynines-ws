@@ -9,8 +9,9 @@ jobs:
     steps:
       - name: Install CF CLI
         run: |
-          curl -L "https://packages.cloudfoundry.org/stable?release=linux64-binary&source=github" | tar -zx
-          sudo mv cf /usr/local/bin/cf
+          curl -L -o /tmp/cf-cli.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=v8&source=github"
+          tar -xzf /tmp/cf-cli.tgz -C /tmp
+          if [ -f /tmp/cf8 ]; then sudo mv /tmp/cf8 /usr/local/bin/cf; else sudo mv /tmp/cf /usr/local/bin/cf; fi
           cf version
       - name: Create space and check/fix roles
         env:
