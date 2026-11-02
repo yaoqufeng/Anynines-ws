@@ -1,0 +1,42 @@
+name: Create New Space
+
+on:
+  workflow_dispatch:
+
+jobs:
+  new-space:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install CF CLI
+        run: |
+          curl -L "https://packages.cloudfoundry.org/stable?release=linux64-binary&source=github" | tar -zx
+          sudo mv cf /usr/local/bin/cf
+          cf version
+      - name: Create space and check/fix roles
+        env:
+          CF_CREDENTIALS: ${{ secrets.CF_CREDENTIALS }}
+        run: |
+          set +e
+          CF_API="https://api.de.a9s.eu"
+          CF_USER="${CF_CREDENTIALS%%-----*}"
+          CF_PASS="${CF_CREDENTIALS#*-----}"
+          echo "::add-mask::$CF_PASS"
+          cf api "$CF_API"
+          cf auth "$CF_USER" "$CF_PASS"
+          echo "=== cf create-space dev ==="
+          cf create-space dev -o admin_gpt_us_kg || true
+          echo "=== cf spaces ==="
+          cf spaces || true
+          echo "=== cf space-users (before fix) ==="
+          cf space-users admin_gpt_us_kg dev || true
+          if cf space-users admin_gpt_us_kg dev 2>/dev/null | grep -A 20 "SPACE DEVELOPER" | grep -q "admin@gpt.us.kg"; then
+            echo "Already SpaceDeveloper, skipping role fix"
+          else
+            echo "Not SpaceDeveloper, attempting role fix"
+            cf set-space-role admin@gpt.us.kg admin_gpt_us_kg dev SpaceManager || true
+            cf set-space-role admin@gpt.us.kg admin_gpt_us_kg dev SpaceDeveloper || true
+          fi
+          echo "=== cf space-users (final verification) ==="
+          cf space-users admin_gpt_us_kg dev || true
+          echo "=== cf target ==="
+          cf target || true
