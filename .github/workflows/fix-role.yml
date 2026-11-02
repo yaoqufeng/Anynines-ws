@@ -1,0 +1,30 @@
+name: Fix Space Role
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-role:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CF CLI
+        run: |
+          curl -L "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=8.14.0" -o /tmp/cf.tgz
+          mkdir -p /tmp/cfcli
+          tar -xzf /tmp/cf.tgz -C /tmp/cfcli
+          sudo cp /tmp/cfcli/cf8 /usr/local/bin/cf
+          cf version
+      - name: Grant SpaceDeveloper role and verify
+        env:
+          CF_CREDENTIALS: ${{ secrets.CF_CREDENTIALS }}
+        run: |
+          CF_API="https://api.de.a9s.eu"
+          CF_USER="${CF_CREDENTIALS%%-----*}"
+          CF_PASS="${CF_CREDENTIALS#*-----}"
+          echo "::add-mask::$CF_PASS"
+          cf api "$CF_API"
+          cf auth "$CF_USER" "$CF_PASS"
+          cf target -o admin_gpt_us_kg -s production
+          cf set-space-role admin@gpt.us.kg admin_gpt_us_kg production SpaceDeveloper
+          cf space-users admin_gpt_us_kg production
