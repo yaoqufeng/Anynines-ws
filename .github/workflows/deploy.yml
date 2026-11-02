@@ -19,10 +19,10 @@ jobs:
 
       - name: 安装Cloud Foundry CLI
         run: |
-          wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
-          echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
-          sudo apt-get update
-          sudo apt-get install cf8-cli
+                              curl -L -o /tmp/cf-cli.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=v8&source=github"
+                                        tar -xzf /tmp/cf-cli.tgz -C /tmp
+                                                  if [ -f /tmp/cf8 ]; then sudo mv /tmp/cf8 /usr/local/bin/cf; else sudo mv /tmp/cf /usr/local/bin/cf; fi
+                                                            cf version
 
       - name: 执行部署
         env:
