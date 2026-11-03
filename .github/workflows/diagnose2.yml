@@ -1,0 +1,119 @@
+name: diagnose2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose2:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install CF CLI (same binary-tarball method as deploy.yml)
+        run: |
+          curl -L -o /tmp/cf-cli.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=v8&source=github"
+          tar -xzf /tmp/cf-cli.tgz -C /tmp
+          if [ -f /tmp/cf8 ]; then sudo mv /tmp/cf8 /usr/local/bin/cf; else sudo mv /tmp/cf /usr/local/bin/cf; fi
+          cf version
+      - name: Log in to Cloud Foundry (same parsing and login as deploy.yml)
+        env:
+          CF_CREDENTIALS: ${{ secrets.CF_CREDENTIALS }}
+        run: |
+          CF_API="https://api.de.a9s.eu"
+          CF_USER="${CF_CREDENTIALS%%-----*}"
+          CF_PASS="${CF_CREDENTIALS#*-----}"
+          echo "::add-mask::$CF_PASS"
+          cf api "$CF_API"
+          cf auth "$CF_USER" "$CF_PASS"
+          cf target -o admin_gpt_us_kg -s production || true
+      - name: Deep diagnosis and alternative role grants
+        run: |
+          set +e
+          echo "=== Stage A: token scopes (payload claims only, never raw token) ==="
+          cf oauth-token > /tmp/tok.txt 2>&1 || true
+          python3 - <<'PY'
+          import base64, json
+          try:
+              raw = open('/tmp/tok.txt').read().strip()
+              tok = raw.split(None, 1)[-1] if ' ' in raw else raw
+              parts = tok.split('.')
+              payload = parts[1] if len(parts) >= 2 else ''
+              payload += '=' * (-len(payload) % 4)
+              data = json.loads(base64.urlsafe_b64decode(payload))
+              for k in ['scope', 'scp', 'user_name', 'origin', 'client_id', 'exp']:
+                  if k in data:
+                      print(k + ':', data[k])
+          except Exception as e:
+              print('token payload parse failed:', e)
+          PY
+          echo "=== Stage B: raw v3 reads (full JSON) ==="
+          echo "--- /v3/organizations ---"
+          cf curl "/v3/organizations" | tee /tmp/orgs.json || true
+          echo "--- /v3/spaces ---"
+          cf curl "/v3/spaces" | tee /tmp/spaces.json || true
+          echo "--- /v3/users ---"
+          cf curl "/v3/users" | tee /tmp/users.json || true
+          echo "--- /v3/info ---"
+          cf curl "/v3/info" || true
+          echo "=== Stage B parsed GUIDs / origin / suspended ==="
+          python3 - <<'PY' > /tmp/ids.txt
+          import json
+          def load(p):
+              try:
+                  return json.load(open(p))
+              except Exception as e:
+                  print('parse failed', p, e)
+                  return {}
+          orgs = load('/tmp/orgs.json')
+          spaces = load('/tmp/spaces.json')
+          users = load('/tmp/users.json')
+          org_guid = ''
+          for r in orgs.get('resources', []):
+              print('ORG name=', r.get('name'), 'guid=', r.get('guid'), 'suspended=', r.get('suspended'))
+              if r.get('name') == 'admin_gpt_us_kg':
+                  org_guid = r.get('guid', '')
+          space_guid = ''
+          for r in spaces.get('resources', []):
+              rel = (r.get('relationships') or {}).get('organization', {}).get('data', {})
+              print('SPACE name=', r.get('name'), 'guid=', r.get('guid'), 'org_guid=', rel.get('guid'))
+              if r.get('name') == 'production' and (not org_guid or rel.get('guid') == org_guid):
+                  space_guid = r.get('guid', '')
+          user_guid = ''
+          user_origin = ''
+          for r in users.get('resources', []):
+              print('USER username=', r.get('username'), 'guid=', r.get('guid'), 'origin=', r.get('origin'))
+              if r.get('username') == 'admin@gpt.us.kg':
+                  user_guid = r.get('guid', '')
+                  user_origin = r.get('origin', '')
+          print('SELECTED_ORG_GUID=' + org_guid)
+          print('SELECTED_SPACE_GUID=' + space_guid)
+          print('SELECTED_USER_GUID=' + user_guid)
+          print('SELECTED_USER_ORIGIN=' + user_origin)
+          PY
+          cat /tmp/ids.txt
+          ORG_GUID=$(grep '^SELECTED_ORG_GUID=' /tmp/ids.txt | cut -d= -f2)
+          SPACE_GUID=$(grep '^SELECTED_SPACE_GUID=' /tmp/ids.txt | cut -d= -f2)
+          USER_GUID=$(grep '^SELECTED_USER_GUID=' /tmp/ids.txt | cut -d= -f2)
+          USER_ORIGIN=$(grep '^SELECTED_USER_ORIGIN=' /tmp/ids.txt | cut -d= -f2)
+          echo "ORG_GUID=$ORG_GUID SPACE_GUID=$SPACE_GUID USER_GUID=$USER_GUID USER_ORIGIN=$USER_ORIGIN"
+          echo "=== Stage C1: set-space-role with --origin ==="
+          if [ -n "$USER_ORIGIN" ]; then
+            echo "Running: cf set-space-role admin@gpt.us.kg admin_gpt_us_kg production SpaceDeveloper --origin $USER_ORIGIN"
+            cf set-space-role admin@gpt.us.kg admin_gpt_us_kg production SpaceDeveloper --origin "$USER_ORIGIN" || true
+          else
+            echo "No origin found in /v3/users; skipping --origin attempt (origin unknown)"
+          fi
+          echo "=== Stage C2: direct v3 POST /v3/roles space_developer ==="
+          if [ -n "$USER_GUID" ] && [ -n "$SPACE_GUID" ]; then
+            PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'type':'space_developer','relationships':{'user':{'data':{'guid':sys.argv[1]}},'space':{'data':{'guid':sys.argv[2]}}}}))" "$USER_GUID" "$SPACE_GUID")
+            echo "POST payload: $PAYLOAD"
+            cf curl -X POST "/v3/roles" -d "$PAYLOAD" || true
+          else
+            echo "Missing USER_GUID or SPACE_GUID; cannot POST /v3/roles"
+          fi
+          echo "=== Stage C3: write-path probe set-org-role OrgAuditor ==="
+          cf set-org-role admin@gpt.us.kg admin_gpt_us_kg OrgAuditor || true
+          echo "=== Final verification ==="
+          echo "--- cf space-users admin_gpt_us_kg production ---"
+          cf space-users admin_gpt_us_kg production || true
+          echo "--- cf org-users admin_gpt_us_kg ---"
+          cf org-users admin_gpt_us_kg || true
+          echo "=== diagnose2 done ==="
