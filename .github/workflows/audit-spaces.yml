@@ -10,8 +10,9 @@ jobs:
       - name: Install CF CLI
         run: |
           set -e
-          curl -L "https://packages.cloudfoundry.org/stable?release=linux64-binary&source=github" | tar -zx
-          sudo mv cf /usr/local/bin/cf
+          curl -L -o /tmp/cf-cli.tgz "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=v8&source=github"
+          tar -xzf /tmp/cf-cli.tgz -C /tmp
+          if [ -f /tmp/cf8 ]; then sudo mv /tmp/cf8 /usr/local/bin/cf; else sudo mv /tmp/cf /usr/local/bin/cf; fi
           cf version
       - name: Audit spaces and try SpaceDeveloper
         env:
@@ -21,6 +22,7 @@ jobs:
           export CF_API="https://api.de.a9s.eu"
           export CF_USER="${CF_CREDENTIALS%%-----*}"
           export CF_PASS="${CF_CREDENTIALS#*-----}"
+          echo "::add-mask::$CF_PASS"
           cf api "$CF_API" --skip-ssl-validation
           cf auth "$CF_USER" "$CF_PASS"
           echo "=== STAGE 1: ENUMERATE ==="
