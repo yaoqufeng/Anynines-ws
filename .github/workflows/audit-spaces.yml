@@ -1,0 +1,58 @@
+name: Audit Spaces
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install CF CLI
+        run: |
+          set -e
+          curl -L "https://packages.cloudfoundry.org/stable?release=linux64-binary&source=github" | tar -zx
+          sudo mv cf /usr/local/bin/cf
+          cf version
+      - name: Audit spaces and try SpaceDeveloper
+        env:
+          CF_CREDENTIALS: ${{ secrets.CF_CREDENTIALS }}
+        run: |
+          set +e
+          export CF_API="https://api.de.a9s.eu"
+          export CF_USER="${CF_CREDENTIALS%%-----*}"
+          export CF_PASS="${CF_CREDENTIALS#*-----}"
+          cf api "$CF_API" --skip-ssl-validation
+          cf auth "$CF_USER" "$CF_PASS"
+          echo "=== STAGE 1: ENUMERATE ==="
+          cf target -o admin_gpt_us_kg
+          echo "--- cf spaces ---"
+          cf spaces
+          echo "--- cf curl /v3/spaces ---"
+          cf curl "/v3/spaces" > spaces.json
+          cat spaces.json
+          echo ""
+          echo "--- Spaces in org 7414de93-d66c-4268-b611-581eb2387549 ---"
+          python3 -c "import json; d=json.load(open('spaces.json')); [print(r['name']+' GUID='+r['guid']) for r in d.get('resources',[]) if r.get('relationships',{}).get('organization',{}).get('data',{}).get('guid')=='7414de93-d66c-4268-b611-581eb2387549']"
+          SPACES=$(python3 -c "import json; d=json.load(open('spaces.json')); print(' '.join(r['name'] for r in d.get('resources',[]) if r.get('relationships',{}).get('organization',{}).get('data',{}).get('guid')=='7414de93-d66c-4268-b611-581eb2387549'))")
+          echo "ORG_SPACES=[$SPACES]"
+          for SPACE in $SPACES; do
+            echo "===== STAGE 1 SPACE-USERS BEFORE: org=admin_gpt_us_kg space=$SPACE ====="
+            cf space-users admin_gpt_us_kg "$SPACE" || echo "space-users FAILED for $SPACE"
+          done
+          echo "=== STAGE 2: TRY SpaceDeveloper in order test, staging, production ==="
+          for SPACE in test staging production; do
+            echo "===== STAGE 2 CHECK: space=$SPACE ====="
+            OUT=$(cf space-users admin_gpt_us_kg "$SPACE" 2>&1)
+            echo "$OUT"
+            if echo "$OUT" | awk '/^SPACE DEVELOPER/{f=1;next} /^SPACE [A-Z]+/{f=0} f && /admin@gpt.us.kg/{found=1} END{exit !found}'; then
+              echo "RESULT: admin@gpt.us.kg IS already SPACE DEVELOPER in $SPACE - skipping grant"
+            else
+              echo "RESULT: admin@gpt.us.kg is NOT SpaceDeveloper in $SPACE - attempting grant"
+              echo "RUN: cf set-space-role admin@gpt.us.kg admin_gpt_us_kg $SPACE SpaceDeveloper"
+              cf set-space-role admin@gpt.us.kg admin_gpt_us_kg "$SPACE" SpaceDeveloper
+              echo "GRANT_EXIT_CODE=$?"
+              echo "===== STAGE 2 SPACE-USERS AFTER GRANT ATTEMPT: space=$SPACE ====="
+              cf space-users admin_gpt_us_kg "$SPACE" || echo "space-users FAILED for $SPACE after grant"
+            fi
+          done
+          echo "=== AUDIT COMPLETE ==="
